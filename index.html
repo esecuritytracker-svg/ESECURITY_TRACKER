@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Academy Readiness Tracker</title>
+<title>Academy Readiness Tracker - All Tabs Edit/Delete</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;600;700&display=swap">
 <style>
   :root{
@@ -205,6 +205,8 @@
   .ctrl-btn:hover{color:var(--accent2);border-color:var(--accent2);}
   .ctrl-btn.teams:hover{color:#5b5fc7;border-color:#5b5fc7;}
   .ctrl-btn.del:hover{color:var(--danger);border-color:var(--danger);}
+  .ctrl-btn.task-edit{color:var(--accent2);border-color:rgba(45,212,191,.45);}
+  .ctrl-btn.task-delete{color:var(--danger);border-color:rgba(248,113,113,.45);}
   .ctrl-btn.blocked-btn.active{color:var(--danger);border-color:var(--danger);background:rgba(248,113,113,.08);}
 
   .meta-line{font-size:.68rem;color:var(--muted);margin-top:7px;font-family:'Share Tech Mono',monospace;}
@@ -365,6 +367,10 @@ function loadLocal(){
       const d = JSON.parse(r5);
       state = d.state || {}; recur = d.recur || {}; customItems = d.customItems || {};
       emails = d.emails || {}; settings = d.settings || {}; log = d.log || []; history = d.history || [];
+      (d.taskDefinitions || []).forEach(saved => {
+        const tab = TABS.find(t => t.id === saved.id);
+        if(tab){ tab.items = saved.items || tab.items; tab.recurring = saved.recurring || tab.recurring || []; }
+      });
       return;
     }
   }catch(e){}
@@ -398,12 +404,16 @@ let sb = null, syncStatus = "connecting", syncTimer = null, syncing = false, syn
 let canWriteShared = true, initialLoaded = false;
 
 function cacheLocal(){
-  try{ localStorage.setItem("academyTrackerCacheV5", JSON.stringify({state, recur, customItems, emails, settings, log, history})); }catch(e){}
+  try{ localStorage.setItem("academyTrackerCacheV5", JSON.stringify({state, recur, customItems, emails, settings, log, history, taskDefinitions: TABS.filter(t => t.items).map(t => ({id:t.id, items:t.items, recurring:t.recurring || []}))})); }catch(e){}
 }
 function applyRemote(d){
   if(!d) return;
   state = d.state || {}; recur = d.recur || {}; customItems = d.customItems || {};
   emails = d.emails || {}; settings = d.settings || {}; log = d.log || []; history = d.history || [];
+  (d.taskDefinitions || []).forEach(saved => {
+    const tab = TABS.find(t => t.id === saved.id);
+    if(tab){ tab.items = saved.items || tab.items; tab.recurring = saved.recurring || tab.recurring || []; }
+  });
   cacheLocal();
 }
 function scheduleSync(){
@@ -419,7 +429,7 @@ async function doSync(){
   try{
     const { error } = await sb.from(TABLE).upsert({
       id: ROW_ID,
-      data: { state, recur, customItems, emails, settings, log, history },
+      data: { state, recur, customItems, emails, settings, log, history, taskDefinitions: TABS.filter(t => t.items).map(t => ({id:t.id, items:t.items, recurring:t.recurring || []})) },
       client_id: CLIENT_ID,
       updated_at: new Date().toISOString()
     });
@@ -521,7 +531,8 @@ function getCustomList(tabId){
 function initials(name){ return name.slice(0,2).toUpperCase(); }
 
 function allItemKeys(tab){
-  const keys = tab.items.map((_, idx) => tab.id + "__" + idx);
+  const keys = [];
+  tab.items.forEach((label, idx) => { if(label) keys.push(tab.id + "__" + idx); });
   getCustomList(tab.id).forEach(ci => keys.push(tab.id + "__c__" + ci.id));
   return keys;
 }
@@ -565,6 +576,7 @@ function getAllAlerts(){
   TABS.forEach(tab => {
     if(!tab.items) return;
     tab.items.forEach((label, idx) => {
+      if(!label) return;
       const key = tab.id + "__" + idx;
       const s = getItemState(key);
       if(!s.checked && isOverdue(s.reminder)) alerts.push({tabId: tab.id, tabLabel: tab.label, label, assignee: s.assignee, reminder: s.reminder});
@@ -583,6 +595,7 @@ function getWhatsLeft(limit){
   TABS.forEach(tab => {
     if(!tab.items) return;
     tab.items.forEach((label, idx) => {
+      if(!label) return;
       const key = tab.id + "__" + idx;
       const s = getItemState(key);
       if(!s.checked) out.push({ tabId: tab.id, tabLabel: tab.label, label, assignee: s.assignee, reminder: s.reminder, blocked: s.blocked });
@@ -618,7 +631,7 @@ function runSearch(q){
   const results = [];
   TABS.forEach(tab => {
     if(!tab.items) return;
-    tab.items.forEach(label => { if(label.toLowerCase().includes(q)) results.push({ label, tabId: tab.id, tabLabel: tab.label }); });
+    tab.items.forEach(label => { if(label && label.toLowerCase().includes(q)) results.push({ label, tabId: tab.id, tabLabel: tab.label }); });
     getCustomList(tab.id).forEach(ci => { if(ci.label.toLowerCase().includes(q)) results.push({ label: ci.label, tabId: tab.id, tabLabel: tab.label }); });
     (tab.recurring || []).forEach(r => { if(r.toLowerCase().includes(q)) results.push({ label: r + " (daily)", tabId: tab.id, tabLabel: tab.label }); });
   });
@@ -906,20 +919,51 @@ function renderItemRow(itemsEl, tab, key, label, isCustom){
     controls.appendChild(teamsBtn);
   }
 
-  if(isCustom){
-    const delBtn = document.createElement("button");
-    delBtn.className = "ctrl-btn del";
-    delBtn.innerHTML = "&#128465; Remove";
-    delBtn.addEventListener("click", () => {
+  const editBtn = document.createElement("button");
+  editBtn.className = "ctrl-btn task-edit";
+  editBtn.textContent = "✎ Edit Task";
+  editBtn.title = "Rename this task";
+  editBtn.addEventListener("click", () => {
+    const updated = prompt("Update task name:", label);
+    if(updated === null) return;
+    const nextLabel = updated.trim();
+    if(!nextLabel){ alert("Task name cannot be empty."); return; }
+    if(nextLabel === label) return;
+    if(isCustom){
+      const ci = getCustomList(tab.id).find(ci => (tab.id + "__c__" + ci.id) === key);
+      if(ci) ci.label = nextLabel;
+      saveCustom();
+    }else{
+      const idx = Number(key.slice((tab.id + "__").length));
+      if(Number.isInteger(idx) && idx >= 0 && idx < tab.items.length) tab.items[idx] = nextLabel;
+      saveLocal();
+    }
+    addLog(`${whoAmI || "Unknown"} renamed task "${label}" to "${nextLabel}" (${tab.label})`);
+    renderAll();
+  });
+  controls.appendChild(editBtn);
+
+  const delBtn = document.createElement("button");
+  delBtn.className = "ctrl-btn del task-delete";
+  delBtn.innerHTML = "&#128465; Delete Task";
+  delBtn.title = "Delete this task";
+  delBtn.addEventListener("click", () => {
+    if(!confirm(`Delete task "${label}" from ${tab.label}? This cannot be undone.`)) return;
+    if(isCustom){
       const list = getCustomList(tab.id);
       const idx = list.findIndex(ci => (tab.id + "__c__" + ci.id) === key);
       if(idx > -1) list.splice(idx, 1);
-      delete state[key];
-      addLog(`${whoAmI || "Unknown"} removed task "${label}" (${tab.label})`);
-      saveCustom(); renderAll();
-    });
-    controls.appendChild(delBtn);
-  }
+      saveCustom();
+    }else{
+      const idx = Number(key.slice((tab.id + "__").length));
+      if(Number.isInteger(idx) && idx >= 0 && idx < tab.items.length) tab.items[idx] = "";
+      saveLocal();
+    }
+    delete state[key];
+    addLog(`${whoAmI || "Unknown"} deleted task "${label}" (${tab.label})`);
+    renderAll();
+  });
+  controls.appendChild(delBtn);
 
   row.appendChild(controls);
 
@@ -1008,6 +1052,35 @@ function renderRecurRow(container, tab, idx, label){
   notes.addEventListener("change", (e) => { r.notes = e.target.value; saveRecur(); });
   wrap.appendChild(notes);
 
+  const recurActions = document.createElement("div");
+  recurActions.className = "item-controls";
+  const editRecur = document.createElement("button");
+  editRecur.className = "ctrl-btn task-edit";
+  editRecur.textContent = "✎ Edit";
+  editRecur.addEventListener("click", () => {
+    const updated = prompt("Update recurring task name:", label);
+    if(updated === null) return;
+    const nextLabel = updated.trim();
+    if(!nextLabel){ alert("Task name cannot be empty."); return; }
+    if(nextLabel === label) return;
+    tab.recurring[idx] = nextLabel;
+    addLog(`${whoAmI || "Unknown"} renamed recurring task "${label}" to "${nextLabel}" (${tab.label})`);
+    saveRecur(); renderAll();
+  });
+  const deleteRecur = document.createElement("button");
+  deleteRecur.className = "ctrl-btn del task-delete";
+  deleteRecur.textContent = "🗑 Delete";
+  deleteRecur.addEventListener("click", () => {
+    if(!confirm(`Delete recurring task "${label}" from ${tab.label}? This cannot be undone.`)) return;
+    tab.recurring[idx] = "";
+    delete recur[key];
+    addLog(`${whoAmI || "Unknown"} deleted recurring task "${label}" (${tab.label})`);
+    saveRecur(); renderAll();
+  });
+  recurActions.appendChild(editRecur);
+  recurActions.appendChild(deleteRecur);
+  wrap.appendChild(recurActions);
+
   container.appendChild(wrap);
 }
 
@@ -1056,7 +1129,7 @@ function renderTab(container, tab){
 
   const itemsEl = document.createElement("div");
   itemsEl.className = "items";
-  tab.items.forEach((label, idx) => renderItemRow(itemsEl, tab, tab.id + "__" + idx, label, false));
+  tab.items.forEach((label, idx) => { if(label) renderItemRow(itemsEl, tab, tab.id + "__" + idx, label, false); });
   getCustomList(tab.id).forEach(ci => renderItemRow(itemsEl, tab, tab.id + "__c__" + ci.id, ci.label, true));
   section.appendChild(itemsEl);
 
@@ -1092,6 +1165,7 @@ function renderTab(container, tab){
     markAllRecurBtn.addEventListener("click", () => {
       let count = 0;
       tab.recurring.forEach((label, idx) => {
+        if(!label) return;
         const key = tab.id + "__r" + idx;
         const r = getRecurState(key);
         if(r.lastDone !== todayStr()){
@@ -1103,7 +1177,7 @@ function renderTab(container, tab){
       if(count){ addLog(`${whoAmI || "Unknown"} bulk-completed ${count} recurring task(s) in ${tab.label}`); renderAll(); }
     });
     recurSection.appendChild(markAllRecurBtn);
-    tab.recurring.forEach((label, idx) => renderRecurRow(recurSection, tab, idx, label));
+    tab.recurring.forEach((label, idx) => { if(label) renderRecurRow(recurSection, tab, idx, label); });
     container.appendChild(recurSection);
   }
 }
@@ -1161,7 +1235,9 @@ function renderAll(){
 }
 
 function exportBackup(){
-  const payload = { state, recur, customItems, emails, settings, log, history, exportedAt: new Date().toISOString() };
+  const payload = { state, recur, customItems, emails, settings, log, history,
+    taskDefinitions: TABS.filter(t => t.items).map(t => ({id:t.id, items:t.items, recurring:t.recurring || []})),
+    exportedAt: new Date().toISOString() };
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type: "application/json"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -1176,6 +1252,10 @@ function importBackup(file){
       const data = JSON.parse(e.target.result);
       state = data.state || {}; recur = data.recur || {}; customItems = data.customItems || {};
       emails = data.emails || {}; settings = data.settings || {}; log = data.log || []; history = data.history || [];
+      (data.taskDefinitions || []).forEach(saved => {
+        const tab = TABS.find(t => t.id === saved.id);
+        if(tab){ tab.items = saved.items || tab.items; tab.recurring = saved.recurring || tab.recurring || []; }
+      });
       addLog(`${whoAmI || "Unknown"} imported a backup`);
       renderAll();
       alert("Backup imported.");
